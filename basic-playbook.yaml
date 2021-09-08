@@ -1,0 +1,130 @@
+- name: Deploy spoke cluster
+  hosts: localhost
+  collections:
+   - community.general
+   - community.kubernetes.k8s
+  gather_facts: no
+  vars:
+    cluster_name: "{{ lookup('env', 'CLUSTER_NAME') | default('assisted-spoke-cluster') }}"
+    pull_secret_file: "{{ lookup('env', 'PULL_SECRET_FILE') }}"
+    ssh_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/id_rsa" 
+    ssh_public_key_file: "{{ ssh_private_key_file }}.pub" 
+    release_image: "quay.io/openshift-release-dev/ocp-release:4.8.4-x86_64"
+  tasks:
+  - name: Create spoke namespace
+    k8s:
+      state: present
+      definition:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: "{{ cluster_name }}"
+
+  - name: Create pullsecret secret
+    k8s:
+      state: present
+      definition:
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: pull-secret
+          namespace: "{{ cluster_name }}"
+        type: kubernetes.io/dockerconfigjson
+        data:
+          .dockerconfigjson: "{{ lookup('file', pull_secret_file) | b64encode }}"
+
+  - name: Create privatekey secret
+    k8s:
+      state: present
+      definition:
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: ssh-private-key
+          namespace: "{{ cluster_name }}"
+        type: kubernetes.io/ssh-auth
+        data:
+          ssh-privatekey: "{{ lookup('file', ssh_private_key_file) | b64encode }}"
+
+  - name: Create cluster image set
+    k8s:
+      state: present
+      definition:
+        apiVersion: hive.openshift.io/v1
+        kind: ClusterImageSet
+        metadata:
+          name: "{{ cluster_name }}"
+          namespace: "{{ cluster_name }}"
+        spec:
+          releaseImage: "{{ release_image }}"
+
+  - name: Create infraenv
+    k8s:
+      state: present
+      definition:
+        apiVersion: agent-install.openshift.io/v1beta1
+        kind: InfraEnv
+        metadata:
+          name: "{{ cluster_name }}"
+          namespace: "{{ cluster_name }}"
+        spec:
+          clusterRef:
+            name: "{{ cluster_name }}"
+            namespace: "{{ cluster_name }}"
+          pullSecretRef:
+            name: pull-secret
+          sshAuthorizedKey: "{{ lookup('file', ssh_public_key_file) }}"
+
+  - name: Create clusterdeployment
+    k8s:
+      state: present
+      definition:
+        apiVersion: hive.openshift.io/v1
+        kind: ClusterDeployment
+        metadata:
+          name: "{{ cluster_name }}"
+          namespace: "{{ cluster_name }}"
+        spec:
+          baseDomain: redhat.com
+          clusterName: "{{ cluster_name }}"
+          clusterInstallRef:
+            group: extensions.hive.openshift.io
+            kind: AgentClusterInstall
+            name: "{{ cluster_name }}"
+            version: v1beta1
+          platform:
+            agentBareMetal:
+              apiVIP: ""
+              ingressVIP: ""
+              agentSelector: {}
+          pullSecretRef:
+            name: pull-secret
+            namespace: "{{ cluster_name }}"
+
+  - name: Create agent cluster install
+    k8s:
+      state: present
+      definition:
+        apiVersion: extensions.hive.openshift.io/v1beta1
+        kind: AgentClusterInstall
+        metadata:
+          name: "{{ cluster_name }}"
+          namespace: "{{ cluster_name }}"
+        spec:
+          clusterDeploymentRef:
+            name: "{{ cluster_name }}"
+          imageSetRef:
+            name: "{{ cluster_name }}"
+          apiVIP: ""
+          ingressVIP: ""
+          networking:
+            clusterNetwork:
+            - cidr: "126"
+              hostPrefix: 23
+            machineNetwork:
+            - cidr: "192.168.111.0/24"
+            serviceNetwork:
+            - "172.30.0.0/16"
+          provisionRequirements:
+            controlPlaneAgents: 1
+          sshPublicKey: "{{ lookup('file', ssh_public_key_file) }}"
